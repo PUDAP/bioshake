@@ -1,0 +1,16 @@
+services:
+  bioshake:
+    build:
+      context: ..
+      dockerfile: edge/Dockerfile
+    image: ghcr.io/pudap/bioshake-edge:latest
+    container_name: bioshake-edge
+    restart: unless-stopped
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

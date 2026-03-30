@@ -1,0 +1,18 @@
+[project]
+name = "bioshake-driver"
+version = "0.1.0"
+description = "Reusable bioshake driver package"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.4.3",
+    "ipykernel>=7.2.0",
+    "parse>=1.21.1",
+    "pyserial>=3.5",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bioshake_driver"]
