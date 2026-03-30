@@ -290,7 +290,7 @@ class BioShake(SerialDevice):
             float|None: acceleration/deceleration value
         """
         out: FloatData = self._query("getShakeAcceleration", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
         
     def _get_shake_acceleration_max(self) -> float|None:
         """
@@ -300,7 +300,7 @@ class BioShake(SerialDevice):
             float|None: acceleration/deceleration time in seconds
         """
         out: FloatData = self._query("getShakeAccelerationMax", data_type=FloatData)
-        return out.data if out.data > 0 else 999999
+        return (out.data if out.data > 0 else 999999) if out is not None else None
     
     def _get_shake_acceleration_min(self) -> float|None:
         """
@@ -310,7 +310,7 @@ class BioShake(SerialDevice):
             float|None: acceleration/deceleration time in seconds
         """
         out: FloatData = self._query("getShakeAccelerationMin", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_shake_actual_speed(self) -> float|None:
         """
@@ -320,7 +320,7 @@ class BioShake(SerialDevice):
             float|None: current mixing speed
         """
         out: FloatData = self._query("getShakeActualSpeed", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_shake_default_direction(self) -> bool|None:
         """
@@ -330,7 +330,7 @@ class BioShake(SerialDevice):
             bool|None: whether mixing direction is counterclockwise
         """
         out: BoolData = self._query("getShakeDefaultDirection", data_type=BoolData)
-        return out.data
+        return out.data if out is not None else None
         
     def _get_shake_direction(self) -> bool|None:
         """
@@ -340,7 +340,7 @@ class BioShake(SerialDevice):
             bool|None: whether mixing direction is counterclockwise
         """
         out: BoolData = self._query("getShakeDirection", data_type=BoolData)
-        return out.data
+        return out.data if out is not None else None
         
     def _get_shake_max_rpm(self) -> float|None:
         """
@@ -350,7 +350,7 @@ class BioShake(SerialDevice):
             float|None: maximum target shake speed
         """
         out: FloatData = self._query("getShakeMaxRpm", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_shake_min_rpm(self) -> float|None:
         """
@@ -360,7 +360,7 @@ class BioShake(SerialDevice):
             float|None: minimum target shake speed
         """
         out: FloatData = self._query("getShakeMinRpm", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_shake_remaining_time(self) -> float|None:
         """
@@ -370,7 +370,7 @@ class BioShake(SerialDevice):
             float|None: minimum target shake speed
         """
         out: FloatData = self._query("getShakeRemainingTime", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_shake_speed_limit_max(self) -> float|None:
         """
@@ -380,7 +380,7 @@ class BioShake(SerialDevice):
             float|None: upper limit for the target speed
         """
         out: FloatData = self._query("getShakeSpeedLimitMax", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_shake_speed_limit_min(self) -> float|None:
         """
@@ -390,7 +390,7 @@ class BioShake(SerialDevice):
             float|None: lower limit for the target speed
         """
         out: FloatData = self._query("getShakeSpeedLimitMin", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_shake_state(self) -> int|None:
         """
@@ -400,10 +400,12 @@ class BioShake(SerialDevice):
             int|None: shaker state as integer
         """
         out: IntData = self._query("getShakeState", data_type=IntData)
+        if out is None:
+            return None
         code = f"ss{out.data}"
         if code in ShakeStateCode.__members__:
             self._logger.info(ShakeStateCode[code].value)
-        return out.data
+        return out.data if out is not None else None
         
     def _get_shake_state_as_string(self) -> str|None:
         """
@@ -413,10 +415,12 @@ class BioShake(SerialDevice):
             str|None: shaker state as string
         """
         out: Data = self._query("getShakeStateAsString")
+        if out is None:
+            return None
         code = out.data.replace("+","t").replace("-","_")
         if code in ShakeStateString.__members__:
             self._logger.info(ShakeStateString[code].value)
-        return out.data
+        return out.data if out is not None else None
         
     def _get_shake_target_speed(self) -> float|None:
         """
@@ -426,7 +430,7 @@ class BioShake(SerialDevice):
             float|None: target mixing speed
         """
         out: FloatData = self._query("getShakeTargetSpeed", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _set_shake_acceleration(self, acceleration:int):
         """
@@ -552,13 +556,19 @@ class BioShake(SerialDevice):
                 f"Target speed {speed} RPM is above the device maximum of {max_speed:.1f} RPM."
             )
 
-        speed_limit_min = self._get_shake_speed_limit_min()
+        try:
+            speed_limit_min = self._get_shake_speed_limit_min()
+        except AttributeError:
+            speed_limit_min = None
         if speed_limit_min is not None and speed < speed_limit_min:
             raise ValueError(
                 f"Target speed {speed} RPM is below the configured minimum limit of {speed_limit_min:.1f} RPM."
             )
 
-        speed_limit_max = self._get_shake_speed_limit_max()
+        try:
+            speed_limit_max = self._get_shake_speed_limit_max()
+        except AttributeError:
+            speed_limit_max = None
         if speed_limit_max is not None and speed > speed_limit_max:
             raise ValueError(
                 f"Target speed {speed} RPM is above the configured maximum limit of {speed_limit_max:.1f} RPM."
@@ -598,7 +608,7 @@ class BioShake(SerialDevice):
             float|None: offset value at the 40°C calibration point
         """
         out: FloatData = self._query("getTemp40Calibr", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_temp_90_calibr(self) -> float|None:
         """
@@ -608,7 +618,7 @@ class BioShake(SerialDevice):
             float|None: offset value at the 90°C calibration point
         """
         out: FloatData = self._query("getTemp90Calibr", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def get_temp_actual(self) -> float|None:
         """
@@ -618,7 +628,7 @@ class BioShake(SerialDevice):
             float|None: current temperature in degrees celsius
         """
         out: FloatData = self._query("getTempActual", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
         
     def _get_temp_limiter_max(self) -> float|None:
         """
@@ -628,7 +638,7 @@ class BioShake(SerialDevice):
             float|None: upper limit for the target temperature in celsius
         """
         out: FloatData = self._query("getTempLimiterMax", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_temp_limiter_min(self) -> float|None:
         """
@@ -638,7 +648,7 @@ class BioShake(SerialDevice):
             float|None: lower limit for the target temperature in celsius
         """
         out: FloatData = self._query("getTempLimiterMin", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_temp_max(self) -> float|None:
         """
@@ -648,7 +658,7 @@ class BioShake(SerialDevice):
             float|None: device specific maximum target temperature in celsius
         """
         out: FloatData = self._query("getTempMax", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_temp_min(self) -> float|None:
         """
@@ -658,7 +668,7 @@ class BioShake(SerialDevice):
             float|None: device specific minimum target temperature in celsius
         """
         out: FloatData = self._query("getTempMin", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_temp_state(self) -> bool:
         """
@@ -668,7 +678,7 @@ class BioShake(SerialDevice):
             bool: whether temperature control is enabled
         """
         out: BoolData = self._query("getTempState", data_type=BoolData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_temp_target(self) -> float|None:
         """
@@ -678,7 +688,7 @@ class BioShake(SerialDevice):
             float|None: target temperature
         """
         out: FloatData = self._query("getTempTarget", data_type=FloatData)
-        return out.data
+        return out.data if out is not None else None
         
     def _set_temp_40_calibr(self, temperature_calibration_40:float):
         """
@@ -841,7 +851,7 @@ class BioShake(SerialDevice):
             bool: whether the clamp self-test is enabled at device startup
         """
         out: BoolData = self._query("getElmSelftest", data_type=BoolData)
-        return out.data
+        return out.data if out is not None else None
         
     def _get_elm_startup_position(self) -> bool:
         """
@@ -851,7 +861,7 @@ class BioShake(SerialDevice):
             bool: whether the clamp is unlocked after device startup
         """
         out: BoolData = self._query("getElmStartupPosition", data_type=BoolData)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_elm_state(self) -> int|None:
         """
@@ -861,10 +871,12 @@ class BioShake(SerialDevice):
             int|None: clamp status as integer
         """
         out: IntData = self._query("getElmState", data_type=IntData)
+        if out is None:
+            return None
         code = f"es{out.data}"
         if code in ELMStateCode.__members__:
             self._logger.info(ELMStateCode[code].value)
-        return out.data
+        return out.data if out is not None else None
     
     def _get_elm_state_as_string(self) -> str|None:
         """
@@ -874,9 +886,11 @@ class BioShake(SerialDevice):
             str|None: clamp status as string
         """
         out: Data = self._query("getElmStateAsString")
+        if out is None:
+            return None
         if out.data in ELMStateString.__members__:
             self._logger.info(ELMStateString[out.data].value)
-        return out.data
+        return out.data if out is not None else None
     
     def close_clamp(self, timeout:int = 5) -> bool:
         """
@@ -888,14 +902,15 @@ class BioShake(SerialDevice):
         Returns:
             bool: whether the clamp was successfully closed
         """
-        out = self._query("setElmLockPos", timeout=timeout)
-        while out is None:
-            if self.flags.simulation:
-                break
-            out = self.read().strip()
-        if out == 'ok':
+        self._query("setElmLockPos")
+        if self.flags.simulation:
             return True
-        return False
+        start_time = time.perf_counter()
+        while self._get_elm_state() != 1:
+            time.sleep(0.1)
+            if time.perf_counter() - start_time > timeout:
+                return False
+        return True
     
     def _set_elm_selftest(self, enable:bool):
         """
@@ -929,13 +944,14 @@ class BioShake(SerialDevice):
         Returns:
             bool: whether the clamp was successfully opened
         """
-        out = self._query("setElmUnlockPos", timeout=timeout)
-        while out is None:
-            if self.flags.simulation:
-                break
-            out = self.read().strip()
-        if out == 'ok':
+        self._query("setElmUnlockPos")
+        if self.flags.simulation:
             return True
-        return False
+        start_time = time.perf_counter()
+        while self._get_elm_state() != 3:
+            time.sleep(0.1)
+            if time.perf_counter() - start_time > timeout:
+                return False
+        return True
 
  
