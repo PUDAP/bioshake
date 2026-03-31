@@ -55,7 +55,6 @@ async def main():
 
     logger.info("Initializing machine driver")
     driver = BioShake(bioshake_port=str(config.bioshake_port))
-    driver.startup()
     logger.info("Centrifuge machine initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)

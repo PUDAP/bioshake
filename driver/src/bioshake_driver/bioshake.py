@@ -8,11 +8,6 @@ Attributes:
     BoolData (NamedTuple): data type for boolean data
     FloatData (NamedTuple): data type for float data
     IntData (NamedTuple): data type for integer data
-    
-## Classes:
-    `BioShake`: provides an interface for available actions to control devices from QInstruments
-    
-<i>Documentation last updated: 2025-02-22</i>
 """
 # Standard library imports
 from __future__ import annotations
@@ -135,15 +130,15 @@ class BioShake(SerialDevice):
     
     _default_flags: SimpleNamespace = SimpleNamespace(verbose=False, connected=False, simulation=False)
     def __init__(self,
-        port: str|None = None, 
-        baudrate: int = 9600, 
-        timeout: int = 1, 
+        port: str|None = None,
+        baudrate: int = 9600,
+        timeout: int = 1,
         *,
-        init_timeout: int = 5, 
+        init_timeout: int = 5,
         data_type: NamedTuple = Data,
         read_format: str = READ_FORMAT,
         write_format: str = WRITE_FORMAT,
-        simulation: bool = False, 
+        simulation: bool = False,
         verbose: bool = False,
         **kwargs
     ):
