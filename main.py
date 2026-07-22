@@ -1,15 +1,16 @@
 """
-Main entry point for the Centrifuge machine edge service.
+Main entry point for the BioShake machine edge service.
 
-This module provides the main event loop for the Centrifuge machine, handling command
+This module provides the main event loop for the BioShake machine, handling command
 execution via NATS messaging, telemetry publishing, and connection management.
 """
 import asyncio
 import logging
 import sys
 import time
+import psutil
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from puda_comms import EdgeNatsClient, EdgeRunner
+from puda import EdgeNatsClient, EdgeRunner
 from bioshake_driver import BioShake
 
 
@@ -19,7 +20,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     force=True,
 )
-logging.getLogger("bioshake").setLevel(logging.WARNING)
+logging.getLogger("bioshake_driver").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Environment configuration
@@ -48,14 +49,14 @@ def load_config() -> Config:
 
 
 async def main():
-    """Initialize the Centrifuge machine driver and NATS client, then run the edge runner."""
+    """Initialize the BioShake machine driver and NATS client, then run the edge runner."""
     config = load_config()
     logger.info("Config loaded for %s", config.machine_id)
     logger.info("Full config: %s", config.model_dump())
 
     logger.info("Initializing machine driver")
-    driver = BioShake(bioshake_port=str(config.bioshake_port))
-    logger.info("Centrifuge machine initialized successfully")
+    driver = BioShake(port=str(config.bioshake_port))
+    logger.info("BioShake machine initialized successfully")
 
     logger.info("Connecting to NATS at %s", config.nats_servers)
     edge_nats_client = EdgeNatsClient(
@@ -65,7 +66,14 @@ async def main():
 
     async def telemetry_handler():
         await edge_nats_client.publish_heartbeat()
-        await edge_nats_client.publish_health({"cpu": 45.2, "mem": 60.1, "temp": 35.0})
+        await edge_nats_client.publish_position(driver.get_position())
+        all_temps = psutil.sensors_temperatures() if hasattr(psutil, "sensors_temperatures") else {}
+        sensor = next((v[0] for k in ("coretemp", "cpu_thermal", "k10temp", "acpitz") if (v := all_temps.get(k))), None)
+        await edge_nats_client.publish_health({
+            "cpu": psutil.cpu_percent(interval=None),
+            "mem": psutil.virtual_memory().percent,
+            "temp": sensor.current if sensor else None,
+        })
 
     runner = EdgeRunner(
         nats_client=edge_nats_client,

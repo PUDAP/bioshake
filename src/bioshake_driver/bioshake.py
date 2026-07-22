@@ -172,6 +172,19 @@ class BioShake(SerialDevice):
         if self.check_device_connection():
             self.model = self._query("getDescription").data
             self.serial_number = self._query("getSerial").data
+
+    def get_position(self) -> dict[str, float]:
+        """Return current device telemetry as float fields for position publishing."""
+        speed = self._get_shake_actual_speed()
+        temp = self.get_temp_actual()
+        shake_out: IntData | None = self._query("getShakeState", data_type=IntData)
+        elm_out: IntData | None = self._query("getElmState", data_type=IntData)
+        return {
+            "speed": float(speed) if speed is not None else 0.0,
+            "temp": float(temp) if temp is not None else 0.0,
+            "shake_state": float(shake_out.data) if shake_out is not None else -1.0,
+            "elm_state": float(elm_out.data) if elm_out is not None else -1.0,
+        }
     
     def _query(self, 
         data: Any, 

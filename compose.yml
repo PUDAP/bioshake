@@ -1,8 +1,8 @@
 services:
   bioshake:
     build:
-      context: ..
-      dockerfile: edge/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     image: ghcr.io/pudap/bioshake-edge:latest
     container_name: bioshake-edge
     restart: unless-stopped
