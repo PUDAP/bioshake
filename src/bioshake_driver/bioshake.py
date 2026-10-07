@@ -132,7 +132,7 @@ class BioShake(SerialDevice):
     def __init__(self,
         port: str|None = None,
         baudrate: int = 9600,
-        timeout: int = 1,
+        timeout: int = 5,
         *,
         init_timeout: int = 5,
         data_type: NamedTuple = Data,

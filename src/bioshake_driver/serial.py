@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections import deque
 from copy import deepcopy
 from datetime import datetime
+from functools import wraps
 import logging
 import queue
 from string import Formatter
@@ -23,6 +24,15 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Any, NamedTuple, Callable
+
+
+def synchronized_io(method):
+    """Serialize complete request/response exchanges on a serial connection."""
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._io_lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 # Third party imports
 import parse
@@ -128,6 +138,7 @@ class BaseDevice:
         self.show_event = threading.Event()
         self.stream_event = threading.Event()
         self.threads = dict()
+        self._io_lock = threading.RLock()
         
         # Logging attributes
         self._logger = logger.getChild(f"{self.__class__.__name__}.{id(self)}")
@@ -391,6 +402,7 @@ class BaseDevice:
             print(processed_data)
         return processed_data, timestamp
     
+    @synchronized_io
     def query(self, 
         data: Any, 
         multi_out: bool = True,
