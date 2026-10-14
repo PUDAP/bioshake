@@ -6,11 +6,10 @@ services:
     image: ghcr.io/pudap/bioshake-edge:latest
     container_name: bioshake-edge
     restart: unless-stopped
-    network_mode: host
     env_file:
       - .env
     devices:
-      - ${BIOSHAKE_PORT}:${BIOSHAKE_PORT}
+      - ${BIOSHAKE_HOST_PORT}:${BIOSHAKE_PORT}
     healthcheck:
       test: ["CMD", "uv", "run", "python", "-c", "import sys; sys.exit(0)"]
       interval: 30s

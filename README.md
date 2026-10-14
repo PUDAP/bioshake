@@ -26,7 +26,13 @@ Edit `.env` and configure:
 
 - `MACHINE_ID`
 - `NATS_SERVERS`
-- `BIOSHAKE_PORT`
+- `BIOSHAKE_HOST_PORT` — serial-device path on the Docker host
+- `BIOSHAKE_PORT` — serial-device path exposed inside the container
+
+The example uses `/dev/ttyUSB0` for both paths. Prefer a stable
+`/dev/serial/by-id/...` value for `BIOSHAKE_HOST_PORT` in production. Docker
+device mappings require Linux device paths; Windows `COM` names are supported
+only in bare-metal mode.
 
 ## Run With Docker (Recommended)
 

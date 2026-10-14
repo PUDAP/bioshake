@@ -34,6 +34,9 @@ class FakeSerialDevice(SerialDevice):
     def read_all(self):
         return []
 
+    def read(self):
+        return ""
+
     def check_device_buffer(self):
         return False
 
@@ -48,6 +51,30 @@ class SerialQueryLockTests(unittest.TestCase):
             device.query("getShakeMaxRpm")
 
         threads = [threading.Thread(target=query) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(device.max_active_writes, 1)
+
+    def test_stream_poll_and_query_are_serialized(self):
+        device = FakeSerialDevice()
+        barrier = threading.Barrier(3)
+
+        def query():
+            barrier.wait()
+            device.query("getShakeMaxRpm")
+
+        def stream_poll():
+            barrier.wait()
+            device.poll("getTemp")
+
+        threads = [
+            threading.Thread(target=query),
+            threading.Thread(target=stream_poll),
+        ]
         for thread in threads:
             thread.start()
         barrier.wait()

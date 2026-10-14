@@ -309,6 +309,7 @@ class BaseDevice:
             return False
         return True
     
+    @synchronized_io
     def poll(self, data:str|None = None) -> str:
         """
         Poll the device
