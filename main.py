@@ -8,7 +8,6 @@ import asyncio
 import logging
 import sys
 import time
-import psutil
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from puda import EdgeNatsClient, EdgeRunner
 from bioshake_driver import BioShake
@@ -64,23 +63,7 @@ async def main():
         machine_id=config.machine_id,
     )
 
-    async def telemetry_handler():
-        await edge_nats_client.publish_heartbeat()
-        await edge_nats_client.publish_position(driver.get_position())
-        all_temps = psutil.sensors_temperatures() if hasattr(psutil, "sensors_temperatures") else {}
-        sensor = next((v[0] for k in ("coretemp", "cpu_thermal", "k10temp", "acpitz") if (v := all_temps.get(k))), None)
-        await edge_nats_client.publish_health({
-            "cpu": psutil.cpu_percent(interval=None),
-            "mem": psutil.virtual_memory().percent,
-            "temp": sensor.current if sensor else None,
-        })
-
-    runner = EdgeRunner(
-        nats_client=edge_nats_client,
-        machine_driver=driver,
-        telemetry_handler=telemetry_handler,
-        state_handler=lambda: {},
-    )
+    runner = EdgeRunner(nats_client=edge_nats_client, machine_driver=driver)
     await runner.connect()
     logger.info("NATS client initialized successfully")
     logger.info(

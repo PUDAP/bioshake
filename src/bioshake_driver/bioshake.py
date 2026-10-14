@@ -17,6 +17,8 @@ import logging
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, NamedTuple
+
+from puda import command, machine_state, safety, tlm_stream
 from .serial import SerialDevice
 from .enums import ELMStateCode, ELMStateString, ShakeStateCode, ShakeStateString
 
@@ -32,7 +34,9 @@ logger = logging.getLogger(__name__)
 
 class BioShake(SerialDevice):
     """
-    BioShake provides an interface for available actions to control devices from QInstruments, including orbital shakers,
+    BioShake is an orbital shaker, heater and plate clamp from QInstruments that shakes, heats and clamps labware.
+
+    It provides an interface for available actions to control devices from QInstruments, including orbital shakers,
     heat plates, and cold plates.
     
     ### Constructor:
@@ -164,6 +168,7 @@ class BioShake(SerialDevice):
         
         self.model = ''
         self.serial_number = ''
+        self._last_status: dict[str, float] = {}
         self.connect()
     
     # General methods
@@ -173,18 +178,26 @@ class BioShake(SerialDevice):
             self.model = self._query("getDescription").data
             self.serial_number = self._query("getSerial").data
 
+    @machine_state
+    def snapshot(self) -> dict:
+        """Return the last sampled device status (cached; never reads from the device)."""
+        return dict(self._last_status)
+
+    @tlm_stream(interval=3.0, name="status")
     def get_position(self) -> dict[str, float]:
-        """Return current device telemetry as float fields for position publishing."""
+        """Current shaker speed, temperature, shake state and clamp state."""
         speed = self._get_shake_actual_speed()
         temp = self.get_temp_actual()
         shake_out: IntData | None = self._query("getShakeState", data_type=IntData)
         elm_out: IntData | None = self._query("getElmState", data_type=IntData)
-        return {
+        status = {
             "speed": float(speed) if speed is not None else 0.0,
             "temp": float(temp) if temp is not None else 0.0,
             "shake_state": float(shake_out.data) if shake_out is not None else -1.0,
             "elm_state": float(elm_out.data) if elm_out is not None else -1.0,
         }
+        self._last_status = status
+        return status
     
     def _query(self, 
         data: Any, 
@@ -509,6 +522,7 @@ class BioShake(SerialDevice):
         self._query("shakeEmergencyOff")
         return
         
+    @command
     def home(self, timeout:int = 5):
         """
         Move shaker to the home position and locks in place
@@ -517,14 +531,16 @@ class BioShake(SerialDevice):
         
         Args:
             timeout (int, optional): number of seconds to wait before aborting. Defaults to 5.
+
+        Raises:
+            TimeoutError: if the shaker does not reach the home position in time
         """
         self._query("shakeGoHome")
         start_time = time.perf_counter()
         while self._get_shake_state() != 3:
             time.sleep(0.1)
             if time.perf_counter() - start_time > timeout:
-                break
-        self._get_shake_state()
+                raise TimeoutError(f"BioShake did not reach the home position within {timeout} seconds")
         return
         
     def _shake_off(self):
@@ -540,6 +556,13 @@ class BioShake(SerialDevice):
         self._query("shakeOn")
         return
 
+    @command
+    @safety(
+        summary="Shakes the plate at the requested speed, then returns to home and locks.",
+        hazards=["moving parts", "spilled liquid at high speed"],
+        requires="Plate is seated and the clamp is closed.",
+        forbidden_when="The clamp is open or the plate is not secured.",
+    )
     def shake(self, speed:int, duration:int):
         """
         Shake at the requested speed for the requested duration in seconds,
@@ -628,6 +651,7 @@ class BioShake(SerialDevice):
         out: FloatData = self._query("getTemp90Calibr", data_type=FloatData)
         return out.data if out is not None else None
     
+    @command
     def get_temp_actual(self) -> float|None:
         """
         Returns the current temperature in degrees celsius
@@ -753,6 +777,7 @@ class BioShake(SerialDevice):
         self._query(f"setTempTarget{value}")
         return
     
+    @command
     def temp_off(self):
         """Switches off the temperature control feature and stops heating/cooling"""
         self._query("tempOff")
@@ -763,6 +788,12 @@ class BioShake(SerialDevice):
         self._query("tempOn")
         return
 
+    @command
+    @safety(
+        summary="Heats or cools the plate to the target temperature and holds it for the duration.",
+        hazards=["hot surface"],
+        requires="Plate is seated on the shaker.",
+    )
     def set_temp(self, temperature:int, duration:int):
         """
         Set the target temperature, wait until it is reached within tolerance,
@@ -900,6 +931,7 @@ class BioShake(SerialDevice):
             self._logger.info(ELMStateString[out.data].value)
         return out.data if out is not None else None
     
+    @command
     def close_clamp(self, timeout:int = 5) -> bool:
         """
         Close the clamp
@@ -908,7 +940,10 @@ class BioShake(SerialDevice):
             timeout (int, optional): number of seconds to wait before aborting. Defaults to 5.
         
         Returns:
-            bool: whether the clamp was successfully closed
+            bool: True once the clamp is closed
+
+        Raises:
+            TimeoutError: if the clamp does not close in time
         """
         self._query("setElmLockPos")
         if self.flags.simulation:
@@ -917,7 +952,7 @@ class BioShake(SerialDevice):
         while self._get_elm_state() != 1:
             time.sleep(0.1)
             if time.perf_counter() - start_time > timeout:
-                return False
+                raise TimeoutError(f"BioShake clamp did not close within {timeout} seconds")
         return True
     
     def _set_elm_selftest(self, enable:bool):
@@ -940,6 +975,13 @@ class BioShake(SerialDevice):
         self._query(f"setElmStartupPosition{int(unlock)}")
         return
     
+    @command
+    @safety(
+        summary="Releases the plate clamp.",
+        hazards=["plate may be released while shaking"],
+        requires="Shaker is stopped and the tablar is in the home position.",
+        forbidden_when="The shaker is shaking.",
+    )
     def open_clamp(self, timeout:int = 5) -> bool:
         """
         Open the clamp
@@ -950,7 +992,10 @@ class BioShake(SerialDevice):
             timeout (int, optional): number of seconds to wait before aborting. Defaults to 5.
         
         Returns:
-            bool: whether the clamp was successfully opened
+            bool: True once the clamp is open
+
+        Raises:
+            TimeoutError: if the clamp does not open in time
         """
         self._query("setElmUnlockPos")
         if self.flags.simulation:
@@ -959,7 +1004,7 @@ class BioShake(SerialDevice):
         while self._get_elm_state() != 3:
             time.sleep(0.1)
             if time.perf_counter() - start_time > timeout:
-                return False
+                raise TimeoutError(f"BioShake clamp did not open within {timeout} seconds")
         return True
 
  
