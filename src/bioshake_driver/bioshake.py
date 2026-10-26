@@ -14,6 +14,7 @@ from __future__ import annotations
 import inspect
 import time
 import logging
+import math
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, NamedTuple
@@ -207,7 +208,8 @@ class BioShake(SerialDevice):
         format_in: str|None = None, 
         format_out: str|None = None,
         data_type: NamedTuple|None = None,
-        timestamp: bool = False
+        timestamp: bool = False,
+        deadline: float|None = None
     ) -> Any:
         """
         Query the device (i.e. write and read data)
@@ -220,6 +222,8 @@ class BioShake(SerialDevice):
             format_out (str|None, optional): format for reading data. Defaults to None.
             data_type (NamedTuple|None, optional): data type for data. Defaults to None.
             timestamp (bool, optional): whether to include a timestamp. Defaults to False.
+            deadline (float|None): optional absolute perf_counter deadline for a
+                single-response query, including serial I/O and exchange-lock waits.
         
         Returns:
             str|float|None: response (string / float)
@@ -242,7 +246,7 @@ class BioShake(SerialDevice):
         
         responses = super().query(
             data, multi_out=multi_out, timeout=timeout,
-            format_in=format_in, timestamp=timestamp
+            format_in=format_in, timestamp=timestamp, deadline=deadline
         )
         self._logger.debug(repr(responses))
         if multi_out and not responses:
@@ -630,6 +634,209 @@ class BioShake(SerialDevice):
 
         return
     
+    def _heat_shake_sample(self, phase:str) -> tuple[float, float, int]:
+        """Read fresh, fail-closed status without telemetry's fallback defaults."""
+        actual, rpm = self.get_temp_actual(), self._get_shake_actual_speed()
+        for name, value in (("temperature", actual), ("speed", rpm)):
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise RuntimeError(f"Missing or invalid actual {name}: {value}")
+        if rpm < 0:
+            raise RuntimeError("Negative measured speed")
+        states = {}
+        for query, allowed in (
+            ("getElmState", {"1"}),
+            ("getTempState", {"1"}),
+            # Ramp may still be homed (3) until motion starts, then accelerating
+            # (5) or running (0). Hold accepts only running.
+            ("getShakeState", {"3"} if phase == "heatup" else
+             ({"0", "3", "5"} if phase == "ramp" else {"0"})),
+        ):
+            # Do not use BoolData: a firmware error string could coerce to True.
+            out = self._query(query, data_type=Data)
+            if out is None or out.data not in allowed:
+                raise RuntimeError(f"Missing or unsafe {query} in {phase}: {out}")
+            states[query] = int(out.data)
+        if phase == "heatup" and rpm != 0:
+            raise RuntimeError("Shaker moved during heatup")
+        if phase == "ramp" and states["getShakeState"] == 3 and rpm != 0:
+            raise RuntimeError("Shaker reported motion while still homed")
+        return actual, rpm, states["getShakeState"]
+
+    def _heat_shake_shutdown(self):
+        """Attempt both off commands before a bounded, measured shutdown check."""
+        errors = []
+        for stop in (lambda: self._query("shakeOff"), self.temp_off):
+            try:
+                stop()
+            except BaseException as exc:
+                errors.append(exc)
+        try:
+            deadline = time.perf_counter() + 10.0
+            while True:
+                shake = self._query("getShakeState", data_type=Data, deadline=deadline)
+                speed = self._query("getShakeActualSpeed", data_type=FloatData, deadline=deadline)
+                rpm = speed.data if speed is not None else None
+                heater = self._query("getTempState", data_type=Data, deadline=deadline)
+                now = time.perf_counter()
+                if now >= deadline:
+                    raise TimeoutError("BioShake shutdown not verified within 10 seconds")
+                if (shake is not None and shake.data == "3" and rpm == 0
+                        and heater is not None and heater.data == "0"):
+                    break
+                time.sleep(min(0.5, deadline - now))
+        except BaseException as exc:
+            errors.append(exc)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise BaseExceptionGroup("BioShake shutdown failures", errors)
+
+    @command
+    @safety(
+        summary="Heat the secured plate and shake for a measured simultaneous hold.",
+        hazards=["hot surface", "moving parts", "spilled liquid at high speed"],
+        requires="Operator confirms plate is seated; clamp closed and shaker stopped at home.",
+        forbidden_when="Plate is absent/unsecured, clamp open, or shaker already moving.",
+    )
+    def heat_shake(self, temperature:float, speed:int, duration:float, *,
+                   plate_seated:bool, heatup_timeout:float = 600,
+                   speed_timeout:float = 60) -> dict:
+        """Maintain heat while shaking; hold begins after measured readiness.
+
+        Args:
+            temperature (float): target degrees C, in 0.1 C increments.
+            speed (int): target RPM.
+            duration (float): simultaneous hold seconds, strictly positive.
+            plate_seated (bool): explicit operator confirmation (no plate sensor).
+            heatup_timeout (float): maximum seconds to achieve stable temperature.
+            speed_timeout (float): maximum seconds to achieve measured speed readiness.
+
+        Temperature must remain within +/-1 C for 2 seconds before shaking.
+        Hold starts only at running state and measured RPM within +/-2% (minimum
+        1 RPM). A still-homed reading just after the start command is part of
+        the speed wait; motion reported while the state is still home aborts.
+        Polling interval is 0.5 s; all hold samples must remain in band.
+        Heating stays enabled until shutdown. Returns measured hold extrema and
+        elapsed time, not a claim of liquid/sample temperature.
+        """
+        started = time.perf_counter()
+        primary_error = None
+        try:
+            for name, value in (("temperature", temperature), ("speed", speed),
+                                ("duration", duration), ("heatup_timeout", heatup_timeout),
+                                ("speed_timeout", speed_timeout)):
+                if type(value) not in (int, float) or not math.isfinite(value):
+                    raise ValueError(f"{name} must be a finite number, not a boolean")
+            if type(speed) is not int or speed <= 0:
+                raise ValueError("speed must be a positive integer RPM")
+            if any(value <= 0 for value in (duration, heatup_timeout, speed_timeout)):
+                raise ValueError("duration and timeouts must be strictly positive")
+            if abs(temperature * 10 - round(temperature * 10)) > 1e-8:
+                raise ValueError("temperature must use 0.1 C increments")
+            if plate_seated is not True:
+                raise ValueError("plate_seated must be explicitly confirmed True")
+            for name, target, read_min, read_max in (
+                ("device temperature", temperature, self._get_temp_min, self._get_temp_max),
+                ("configured temperature", temperature,
+                 self._get_temp_limiter_min, self._get_temp_limiter_max),
+                ("device speed", speed, self._get_shake_min_rpm, self._get_shake_max_rpm),
+                ("configured speed", speed,
+                 self._get_shake_speed_limit_min, self._get_shake_speed_limit_max),
+            ):
+                lower, upper = read_min(), read_max()
+                if any(type(value) not in (int, float) or not math.isfinite(value)
+                       for value in (lower, upper)):
+                    raise RuntimeError(f"Missing or invalid {name} limits")
+                if lower > upper:
+                    raise RuntimeError(f"Inverted {name} limits")
+                if not lower <= target <= upper:
+                    raise ValueError(f"Target outside {name} limits [{lower}, {upper}]")
+            if self._get_elm_state() != 1:
+                raise RuntimeError("BioShake clamp must be locked")
+            if self._get_shake_state() != 3 or self._get_shake_actual_speed() != 0:
+                raise RuntimeError("BioShake must be stopped at home with measured zero RPM")
+            self._set_temp_target(temperature)
+            self._set_shake_target_speed(speed)
+            for name, actual, target in (
+                ("target temperature", self._get_temp_target(), temperature),
+                ("target speed", self._get_shake_target_speed(), speed),
+            ):
+                if (actual is None or not math.isfinite(actual)
+                        or abs(actual - target) > 0.05):
+                    raise RuntimeError(f"Missing or mismatched {name} readback: {actual}")
+            self._temp_on()
+            heatup_deadline = time.perf_counter() + heatup_timeout
+            stable_since = None
+            while True:
+                actual, _, _ = self._heat_shake_sample("heatup")
+                now = time.perf_counter()
+                if now >= heatup_deadline:
+                    raise TimeoutError("BioShake stable temperature heatup timed out")
+                if abs(actual - temperature) <= 1.0:
+                    if stable_since is None:
+                        stable_since = now
+                    if now - stable_since >= 2.0:
+                        break
+                else:
+                    stable_since = None
+                time.sleep(min(0.5, heatup_deadline - now))
+
+            self._shake_on()
+            speed_deadline = time.perf_counter() + speed_timeout
+            while True:
+                actual, rpm, state = self._heat_shake_sample("ramp")
+                now = time.perf_counter()
+                if abs(actual - temperature) > 1.0:
+                    raise RuntimeError("Temperature drift outside +/-1 C during ramp")
+                if rpm > speed + max(1.0, speed * 0.02):
+                    raise RuntimeError("Measured overspeed during ramp")
+                if now >= speed_deadline:
+                    raise TimeoutError("BioShake measured speed readiness timed out")
+                if (abs(actual - temperature) <= 1.0
+                        and abs(rpm - speed) <= max(1.0, speed * 0.02)
+                        and state == 0):
+                    break
+                time.sleep(min(0.5, speed_deadline - now))
+
+            hold_started = time.perf_counter()
+            temperatures, speeds = [], []
+            while True:
+                actual, rpm, _ = self._heat_shake_sample("hold")
+                if abs(actual - temperature) > 1.0:
+                    raise RuntimeError("Temperature drift outside +/-1 C during hold")
+                if abs(rpm - speed) > max(1.0, speed * 0.02):
+                    raise RuntimeError("Measured speed drift outside tolerance during hold")
+                temperatures.append(actual)
+                speeds.append(rpm)
+                elapsed = time.perf_counter() - hold_started
+                if elapsed >= duration:
+                    break
+                time.sleep(min(0.5, duration - elapsed))
+            result = {
+                "target_temperature_c": float(temperature),
+                "target_speed_rpm": speed,
+                "hold_elapsed_seconds": elapsed,
+                "hold_started_after_seconds": hold_started - started,
+                "temperature_min_c": min(temperatures),
+                "temperature_max_c": max(temperatures),
+                "speed_min_rpm": min(speeds),
+                "speed_max_rpm": max(speeds),
+            }
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            try:
+                self._heat_shake_shutdown()
+            except BaseException as cleanup_error:
+                if primary_error is not None:
+                    raise BaseExceptionGroup(
+                        "BioShake operation and shutdown failed", [primary_error, cleanup_error]
+                    ) from None
+                raise
+        result["shutdown_verified"] = True
+        return result
+
     # Temperature methods
     def _get_temp_40_calibr(self) -> float|None:
         """

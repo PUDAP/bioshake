@@ -26,12 +26,31 @@ from types import SimpleNamespace
 from typing import Any, NamedTuple, Callable
 
 
+def remaining_time(deadline: float) -> float:
+    """Remaining seconds on an absolute perf_counter deadline, or fail closed."""
+    remaining = deadline - time.perf_counter()
+    if remaining <= 0:
+        raise TimeoutError("Serial exchange deadline expired")
+    return remaining
+
+
 def synchronized_io(method):
     """Serialize complete request/response exchanges on a serial connection."""
     @wraps(method)
     def wrapper(self, *args, **kwargs):
-        with self._io_lock:
-            return method(self, *args, **kwargs)
+        deadline = kwargs.get('deadline')
+        if deadline is None:
+            with self._io_lock:
+                return method(self, *args, **kwargs)
+        if not self._io_lock.acquire(timeout=remaining_time(deadline)):
+            raise TimeoutError("Serial exchange lock deadline expired")
+        try:
+            remaining_time(deadline)
+            result = method(self, *args, **kwargs)
+            remaining_time(deadline)
+            return result
+        finally:
+            self._io_lock.release()
     return wrapper
 
 # Third party imports
@@ -310,7 +329,7 @@ class BaseDevice:
         return True
     
     @synchronized_io
-    def poll(self, data:str|None = None) -> str:
+    def poll(self, data:str|None = None, *, deadline:float|None = None) -> str:
         """
         Poll the device
         
@@ -322,10 +341,11 @@ class BaseDevice:
         """
         out = ''
         ret = True
+        io_options = {} if deadline is None else {'deadline': deadline}
         if data is not None:
-            ret = self.write(data)
+            ret = self.write(data, **io_options)
         if data is None or ret:
-            out: str = self.read()
+            out: str = self.read(**io_options)
         return out
     
     def process_input(self, 
@@ -413,6 +433,7 @@ class BaseDevice:
         format_out: str|None = None,
         data_type: NamedTuple|None = None,
         timestamp: bool = False,
+        deadline: float|None = None,
         **kwargs
     ) -> Any | None:
         """
@@ -426,15 +447,19 @@ class BaseDevice:
             format_out (str|None, optional): format for the output data. Defaults to None.
             data_type (NamedTuple|None, optional): data type for the data. Defaults to None.
             timestamp (bool, optional): whether to return the timestamp. Defaults to False.
+            deadline (float|None): optional absolute perf_counter deadline for
+                single-response serial queries, including exchange-lock waits.
             
         Returns:
             Any|None: queried data
         """
+        if deadline is not None and multi_out:
+            raise ValueError("deadline requires a single-response query (multi_out=False)")
         data_type: NamedTuple = data_type or self.data_type
         data_in = self.process_input(data, format_in, **kwargs)
         now = datetime.now() if timestamp else None
         if not multi_out:
-            raw_out = self.poll(data_in)
+            raw_out = self.poll(data_in, **({} if deadline is None else {'deadline': deadline}))
             if raw_out == '':
                 return (None, now) if timestamp else None
             out, now = self.process_output(raw_out, format_out, data_type, now)
@@ -834,11 +859,30 @@ class SerialDevice(BaseDevice):
         self.flags.connected = False
         return
     
-    def read(self) -> str:
+    def read(self, *, deadline:float|None = None) -> str:
         """Read data from the device"""
         data = ''
         try:
-            data = self.serial.readline().decode("utf-8", "replace").replace('\uFFFD', '')
+            if deadline is None:
+                raw = self.serial.readline()
+            else:
+                # readline() can restart its timeout for every byte. Budget each
+                # byte against the same deadline, including trickling replies.
+                original_timeout = self.serial.timeout
+                raw = bytearray()
+                try:
+                    while True:
+                        budget = remaining_time(deadline)
+                        self.serial.timeout = (budget if original_timeout is None
+                                               else min(original_timeout, budget))
+                        byte = self.serial.read(1)
+                        remaining_time(deadline)
+                        raw.extend(byte)
+                        if not byte or byte == b'\n':
+                            break
+                finally:
+                    self.serial.timeout = original_timeout
+            data = raw.decode("utf-8", "replace").replace('\uFFFD', '')
             data = data.strip()
             self._logger.debug(f"[{self.port}] Received: {data!r}")
             self.serial.reset_output_buffer()
@@ -869,11 +913,22 @@ class SerialDevice(BaseDevice):
         self._logger.debug(f"[{self.port}] Received: {data!r}")
         return [d.strip() for d in data.split(delimiter) if len(d.strip())]
     
-    def write(self, data:str) -> bool:
+    def write(self, data:str, *, deadline:float|None = None) -> bool:
         """Write data to the device"""
         assert isinstance(data, str), "Ensure data is a string"
         try:
-            self.serial.write(data.encode('utf-8'))
+            if deadline is None:
+                self.serial.write(data.encode('utf-8'))
+            else:
+                original_timeout = self.serial.write_timeout
+                try:
+                    budget = remaining_time(deadline)
+                    self.serial.write_timeout = (budget if original_timeout is None
+                                                 else min(original_timeout, budget))
+                    self.serial.write(data.encode('utf-8'))
+                    remaining_time(deadline)
+                finally:
+                    self.serial.write_timeout = original_timeout
             self._logger.debug(f"[{self.port}] Sent: {data!r}")
         except serial.SerialException:
             self._logger.debug(f"[{self.port}] Failed to send: {data!r}")
