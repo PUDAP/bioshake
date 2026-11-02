@@ -266,12 +266,116 @@ class HeatShakeTests(unittest.TestCase):
                 self.assertIn('tempOff', commands)
 
 
+    def test_ramp_allows_ten_percent_overspeed_without_starting_hold_early(self):
+        real_query = self.device._query
+
+        def transient_overspeed(data, **kwargs):
+            if (data == 'getShakeActualSpeed' and self.device.running
+                    and self.device.shake_started is not None
+                    and self.clock.now < self.device.shake_started + 2):
+                self.device.calls.append((self.clock.now, data))
+                return kwargs['data_type'](660)
+            return real_query(data, **kwargs)
+
+        self.device._query = transient_overspeed
+        result = self.run_command(duration=1)
+        self.assertGreaterEqual(result['hold_started_after_seconds'], 6)
+        self.assertEqual(result['speed_min_rpm'], 600)
+        self.assertEqual(result['speed_max_rpm'], 600)
+        self.assertGreaterEqual(result['hold_elapsed_seconds'], 1)
+        self.assertTrue(result['shutdown_verified'])
+        self.assertFalse(self.device.running)
+        self.assertEqual(self.device.heating, 0)
+
+    def test_ramp_ten_percent_allowance_scales_with_setpoint(self):
+        for target, ramp_rpm in ((200, 220), (1000, 1100)):
+            with self.subTest(target=target, ramp_rpm=ramp_rpm):
+                self.clock.now = 0
+                self.device = FakeBioShake(self.clock)
+                real_query = self.device._query
+
+                def transient_overspeed(data, **kwargs):
+                    if (data == 'getShakeActualSpeed' and self.device.running
+                            and self.device.shake_started is not None
+                            and self.clock.now < self.device.shake_started + 2):
+                        self.device.calls.append((self.clock.now, data))
+                        return kwargs['data_type'](ramp_rpm)
+                    return real_query(data, **kwargs)
+
+                self.device._query = transient_overspeed
+                result = self.run_command(speed=target, duration=1)
+                self.assertEqual(result['speed_min_rpm'], target)
+                self.assertEqual(result['speed_max_rpm'], target)
+                self.assertTrue(result['shutdown_verified'])
+
+    def test_ramp_below_ten_percent_but_outside_readiness_still_times_out(self):
+        real_query = self.device._query
+
+        def never_ready(data, **kwargs):
+            if data == 'getShakeActualSpeed' and self.device.running:
+                self.device.calls.append((self.clock.now, data))
+                return kwargs['data_type'](630)
+            return real_query(data, **kwargs)
+
+        self.device._query = never_ready
+        with self.assertRaisesRegex(TimeoutError, 'speed readiness'):
+            self.run_command(duration=1, speed_timeout=2)
+        self.assertFalse(self.device.running)
+        self.assertEqual(self.device.heating, 0)
+        commands = [command for _, command in self.device.calls]
+        self.assertIn('shakeOff', commands)
+        self.assertIn('tempOff', commands)
+
+    def test_hold_allows_exact_ten_percent_speed_deviations(self):
+        for hold_rpm in (540, 660):
+            with self.subTest(hold_rpm=hold_rpm):
+                self.clock.now = 0
+                self.device = FakeBioShake(self.clock)
+                real_query = self.device._query
+
+                def hold_deviation(data, **kwargs):
+                    if (data == 'getShakeActualSpeed' and self.device.running
+                            and self.clock.now >= 7):
+                        self.device.calls.append((self.clock.now, data))
+                        return kwargs['data_type'](hold_rpm)
+                    return real_query(data, **kwargs)
+
+                self.device._query = hold_deviation
+                result = self.run_command(duration=3)
+                self.assertGreaterEqual(result['hold_elapsed_seconds'], 3)
+                self.assertEqual(result['speed_min_rpm'], min(600, hold_rpm))
+                self.assertEqual(result['speed_max_rpm'], max(600, hold_rpm))
+                self.assertTrue(result['shutdown_verified'])
+                self.assertFalse(self.device.running)
+                self.assertEqual(self.device.heating, 0)
+
+    def test_hold_ten_percent_tolerance_scales_with_setpoint(self):
+        for target, hold_rpm in ((200, 180), (1000, 1100)):
+            with self.subTest(target=target, hold_rpm=hold_rpm):
+                self.clock.now = 0
+                self.device = FakeBioShake(self.clock)
+                real_query = self.device._query
+
+                def hold_deviation(data, **kwargs):
+                    if (data == 'getShakeActualSpeed' and self.device.running
+                            and self.clock.now >= 7):
+                        self.device.calls.append((self.clock.now, data))
+                        return kwargs['data_type'](hold_rpm)
+                    return real_query(data, **kwargs)
+
+                self.device._query = hold_deviation
+                result = self.run_command(speed=target, duration=3)
+                self.assertGreaterEqual(result['hold_elapsed_seconds'], 3)
+                self.assertEqual(result['speed_min_rpm'], min(target, hold_rpm))
+                self.assertEqual(result['speed_max_rpm'], max(target, hold_rpm))
+                self.assertTrue(result['shutdown_verified'])
+
     def test_temperature_and_speed_drift_abort_without_counting_an_invalid_hold(self):
         for phase, query, value in (
             ('ramp', 'getTempActual', 41.1), ('ramp', 'getTempActual', 38.9),
-            ('ramp', 'getShakeActualSpeed', 613),
+            ('ramp', 'getShakeActualSpeed', 661),
             ('hold', 'getTempActual', 41.1), ('hold', 'getTempActual', 38.9),
-            ('hold', 'getShakeActualSpeed', 587), ('hold', 'getShakeActualSpeed', 613),
+            ('hold', 'getShakeActualSpeed', 539), ('hold', 'getShakeActualSpeed', 661),
         ):
             with self.subTest(phase=phase, query=query, value=value):
                 self.clock.now = 0

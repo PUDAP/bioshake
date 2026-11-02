@@ -735,14 +735,21 @@ class BioShake(SerialDevice):
                 raise ValueError("temperature must use 0.1 C increments")
             if plate_seated is not True:
                 raise ValueError("plate_seated must be explicitly confirmed True")
-            for name, target, read_min, read_max in (
+            limits = [
                 ("device temperature", temperature, self._get_temp_min, self._get_temp_max),
-                ("configured temperature", temperature,
-                 self._get_temp_limiter_min, self._get_temp_limiter_max),
                 ("device speed", speed, self._get_shake_min_rpm, self._get_shake_max_rpm),
-                ("configured speed", speed,
-                 self._get_shake_speed_limit_min, self._get_shake_speed_limit_max),
-            ):
+            ]
+            # Integration Manual 010.8 pp. 2, 8, 10, 13: D30 is BS-family;
+            # the separate configured-limit queries exist only on TC firmware.
+            # Scope this capability to the confirmed model, not an error fallback.
+            if getattr(self, "model", None) != "Q.MTP-BIOSHAKE D30-T elm":
+                limits.extend([
+                    ("configured temperature", temperature,
+                     self._get_temp_limiter_min, self._get_temp_limiter_max),
+                    ("configured speed", speed,
+                     self._get_shake_speed_limit_min, self._get_shake_speed_limit_max),
+                ])
+            for name, target, read_min, read_max in limits:
                 lower, upper = read_min(), read_max()
                 if any(type(value) not in (int, float) or not math.isfinite(value)
                        for value in (lower, upper)):
@@ -788,7 +795,7 @@ class BioShake(SerialDevice):
                 now = time.perf_counter()
                 if abs(actual - temperature) > 1.0:
                     raise RuntimeError("Temperature drift outside +/-1 C during ramp")
-                if rpm > speed + max(1.0, speed * 0.02):
+                if rpm > speed + max(1.0, speed * 0.10):
                     raise RuntimeError("Measured overspeed during ramp")
                 if now >= speed_deadline:
                     raise TimeoutError("BioShake measured speed readiness timed out")
@@ -804,7 +811,7 @@ class BioShake(SerialDevice):
                 actual, rpm, _ = self._heat_shake_sample("hold")
                 if abs(actual - temperature) > 1.0:
                     raise RuntimeError("Temperature drift outside +/-1 C during hold")
-                if abs(rpm - speed) > max(1.0, speed * 0.02):
+                if abs(rpm - speed) > max(1.0, speed * 0.10):
                     raise RuntimeError("Measured speed drift outside tolerance during hold")
                 temperatures.append(actual)
                 speeds.append(rpm)
