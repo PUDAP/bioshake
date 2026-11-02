@@ -711,13 +711,23 @@ class BioShake(SerialDevice):
             heatup_timeout (float): maximum seconds to achieve stable temperature.
             speed_timeout (float): maximum seconds to achieve measured speed readiness.
 
+        Requires a locked clamp, home state and measured zero RPM. Targets must
+        lie within the device limits and, except on Q.MTP-BIOSHAKE D30-T elm
+        (no TC configured-limit queries), the configured limits.
+
         Temperature must remain within +/-1 C for 2 seconds before shaking.
-        Hold starts only at running state and measured RPM within +/-2% (minimum
-        1 RPM). A still-homed reading just after the start command is part of
-        the speed wait; motion reported while the state is still home aborts.
-        Polling interval is 0.5 s; all hold samples must remain in band.
-        Heating stays enabled until shutdown. Returns measured hold extrema and
-        elapsed time, not a claim of liquid/sample temperature.
+        During ramp, RPM above target +10% (minimum 1 RPM) aborts. Hold starts
+        only at running state and measured RPM within +/-2% (minimum 1 RPM). A
+        still-homed reading just after the start command is part of the speed
+        wait; motion reported while the state is still home aborts. Polling
+        interval is 0.5 s; hold RPM must remain within +/-10% of target
+        (minimum 1 RPM), and hold temperature must remain within +/-1 C.
+        Missing or unsafe readings abort.
+
+        Heating stays enabled until shutdown. On success or failure, shaking and
+        heating are switched off and home, zero RPM and heater-off must be
+        verified within 10 s; cleanup errors are raised. Returns measured hold
+        extrema and elapsed time, not a claim of liquid/sample temperature.
         """
         started = time.perf_counter()
         primary_error = None
