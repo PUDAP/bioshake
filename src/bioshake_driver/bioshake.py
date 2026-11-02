@@ -184,7 +184,7 @@ class BioShake(SerialDevice):
         """Return the last sampled device status (cached; never reads from the device)."""
         return dict(self._last_status)
 
-    @tlm_stream(interval=3.0, name="status")
+    @tlm_stream(interval=3.0, name="state")
     def get_position(self) -> dict[str, float]:
         """Current shaker speed, temperature, shake state and clamp state."""
         speed = self._get_shake_actual_speed()
