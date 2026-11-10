@@ -30,9 +30,12 @@ Edit `.env` and configure:
 - `BIOSHAKE_PORT` — serial-device path exposed inside the container
 
 The example uses `/dev/ttyUSB0` for both paths. Prefer a stable
-`/dev/serial/by-id/...` value for `BIOSHAKE_HOST_PORT` in production. Docker
-device mappings require Linux device paths; Windows `COM` names are supported
-only in bare-metal mode.
+`/dev/serial/by-id/...` value for both `BIOSHAKE_HOST_PORT` and
+`BIOSHAKE_PORT`. Docker device mappings require Linux device paths; Windows
+`COM` names are supported only in bare-metal mode. Compose uses host
+networking, so `NATS_SERVERS=nats://localhost:4222` is the broker on the same
+machine. Recreate the container after a network-mode change; `docker start`
+keeps the old network.
 
 ## Run With Docker (Recommended)
 

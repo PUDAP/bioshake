@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     image: ghcr.io/pudap/bioshake-edge:latest
     container_name: bioshake-edge
+    network_mode: host
     restart: unless-stopped
     env_file:
       - .env
